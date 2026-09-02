@@ -1,0 +1,228 @@
+/* style.css
+   Стилизация под интерфейс Битрикс24: тёмно-синяя шапка, светлый фон
+   рабочей области, фирменный голубой акцент. */
+
+:root {
+  --b24-navy: #2c3d54;
+  --b24-navy-dark: #1f2c3d;
+  --b24-blue: #2fc6f6;
+  --b24-blue-dark: #1aa8d8;
+  --b24-bg: #f4f5f7;
+  --b24-card-bg: #ffffff;
+  --b24-border: #e2e5ea;
+  --b24-text: #1f2c3d;
+  --b24-text-muted: #7c8695;
+  --b24-success: #82bc00;
+  --b24-danger: #e6493a;
+  --b24-radius: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--b24-bg);
+  color: var(--b24-text);
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Верхняя панель ---------- */
+
+.topbar {
+  background: var(--b24-navy);
+  color: #fff;
+  padding: 16px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.topbar__title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.topbar__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #c3ccd9;
+}
+
+.filter select,
+.filter input[type="date"] {
+  background: var(--b24-navy-dark);
+  border: 1px solid #3a4a63;
+  color: #fff;
+  border-radius: var(--b24-radius);
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 160px;
+}
+
+.filter--dates {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter--dates label {
+  margin-left: 4px;
+}
+
+/* ---------- Контент ---------- */
+
+.content {
+  flex: 1;
+  padding: 24px;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.banner {
+  padding: 12px 16px;
+  border-radius: var(--b24-radius);
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+.banner--error {
+  background: #fdecea;
+  color: var(--b24-danger);
+  border: 1px solid #f6c6c1;
+}
+
+/* ---------- Карточки показателей ---------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.card {
+  background: var(--b24-card-bg);
+  border: 1px solid var(--b24-border);
+  border-radius: var(--b24-radius);
+  padding: 18px 20px;
+}
+
+.card__label {
+  font-size: 13px;
+  color: var(--b24-text-muted);
+  margin-bottom: 8px;
+}
+
+.card__value {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--b24-navy);
+}
+
+/* ---------- Панели (таблицы) ---------- */
+
+.panel {
+  background: var(--b24-card-bg);
+  border: 1px solid var(--b24-border);
+  border-radius: var(--b24-radius);
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+
+.panel__title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--b24-border);
+}
+
+.panel__body {
+  padding: 0;
+}
+
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.data-table th {
+  text-align: left;
+  background: #fafbfc;
+  color: var(--b24-text-muted);
+  font-weight: 500;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--b24-border);
+}
+
+table.data-table td {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--b24-border);
+}
+
+table.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+table.data-table td.amount,
+table.data-table th.amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-badge {
+  display: inline-block;
+  background: rgba(47, 198, 246, 0.12);
+  color: var(--b24-blue-dark);
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+/* ---------- Служебные состояния ---------- */
+
+.loader {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--b24-text-muted);
+  font-size: 13px;
+}
+
+.empty-state {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--b24-text-muted);
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .cards {
+    grid-template-columns: 1fr;
+  }
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

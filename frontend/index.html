@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Аналитика сделок CRM</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1 class="topbar__title">Аналитика сделок CRM</h1>
+
+      <div class="topbar__filters">
+        <div class="filter">
+          <label for="periodSelect">Период создания</label>
+          <select id="periodSelect">
+            <option value="all" selected>Весь период</option>
+            <option value="today">Сегодня</option>
+            <option value="yesterday">Вчера</option>
+            <option value="week">Неделя</option>
+            <option value="month">Месяц</option>
+            <option value="quarter">Квартал</option>
+            <option value="year">Год</option>
+            <option value="custom">Произвольный период</option>
+          </select>
+        </div>
+
+        <div class="filter filter--dates" id="customDates" hidden>
+          <label for="dateFrom">С</label>
+          <input type="date" id="dateFrom" />
+          <label for="dateTo">По</label>
+          <input type="date" id="dateTo" />
+        </div>
+
+        <div class="filter">
+          <label for="funnelSelect">Воронка</label>
+          <select id="funnelSelect">
+            <option value="all" selected>Все воронки</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+    <main class="content">
+      <div id="globalError" class="banner banner--error" hidden></div>
+
+      <section class="cards" id="metricsCards">
+        <div class="card">
+          <div class="card__label">Сумма открытых сделок</div>
+          <div class="card__value" id="metricOpenAmount">—</div>
+        </div>
+        <div class="card">
+          <div class="card__label">Выигранные сделки за период</div>
+          <div class="card__value" id="metricWonCount">—</div>
+        </div>
+        <div class="card">
+          <div class="card__label">Средний чек</div>
+          <div class="card__value" id="metricAvgCheck">—</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel__title">Сводка по стадиям воронки</h2>
+        <div class="panel__body" id="stagesContainer">
+          <div class="loader">Загрузка...</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel__title">Последние сделки</h2>
+        <div class="panel__body" id="recentContainer">
+          <div class="loader">Загрузка...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
