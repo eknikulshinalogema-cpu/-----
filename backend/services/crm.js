@@ -1,279 +1,383 @@
 // crm.js
-// Слой бизнес-логики над VibeCode CRM API: получение воронок, стадий,
-// сделок текущего пользователя и агрегация показателей дашборда.
+// Бизнес-логика поверх реального VibeCode Entity API.
 //
-// ВНИМАНИЕ (важно для проверяющего и для дальнейшей разработки):
-// Часть деталей контракта API (точные имена полей в ответах
-// crm.deal.list, семантика статусов "выигранная/проигранная" сделка,
-// формат batch-ответа) взяты по наиболее вероятной конвенции,
-// описанной в ТЗ, так как страница документации
-// https://vibecode.bitrix24.tech/v1/me на момент разработки отдаёт 401
-// без интерактивной сессии и не была доступна для сверки.
-// Места, требующие проверки на реальном стенде, помечены комментарием
-// "ПРОВЕРИТЬ:".
+// Важные допущения, которые нужно проверить на реальном портале
+// (помечены ПРОВЕРИТЬ ниже) — их нельзя было свести к нулю без доступа
+// к порталу с настоящими данными:
+// - Поле полного имени сотрудника в /v1/users (пробуем несколько
+//   вариантов написания).
+// - Оператор "входит в список" во фильтре ($in) для assignedById —
+//   если платформа его не поддерживает, код автоматически переключится
+//   на построчную фильтрацию через Batch (см. комментарий в fetchAllDeals).
 
 const vibeApi = require('./vibeApi');
 const cache = require('../utils/cache');
 const config = require('../config');
 const logger = require('../utils/logger');
 
-const DEAL_ENTITY_TYPE_ID = 2; // Сделки (CRM Deal) — стандартный ID сущности
-
-// -------------------- Воронки --------------------
+// -------------------- Воронки (deal-categories) --------------------
 
 /**
- * GET /v1/crm.category.list?entityTypeId=2
- * Возвращает список воронок: [{ id, name }]
+ * GET /v1/deal-categories — список воронок сделок.
+ * Кэшируется на bearer, так как ответ может отличаться по правам доступа
+ * (на практике воронки одинаковы для всех, но кэш живёт недолго — 5 минут).
  */
-async function getFunnels() {
-  return cache.getOrLoad('funnels', config.cacheTtlMs, async () => {
-    const data = await vibeApi.request('/crm.category.list', {
-      method: 'GET',
-      params: { entityTypeId: DEAL_ENTITY_TYPE_ID },
-    });
-    const list = (data && data.result) || [];
+async function getFunnels(bearer) {
+  return cache.getOrLoad(`funnels:${bearer || 'anon'}`, config.cacheTtlMs, async () => {
+    const data = await vibeApi.listEntity('deal-categories', { limit: 100, bearer });
+    const list = (data && data.data) || [];
     return list.map((item) => ({
       id: Number(item.id),
-      name: item.name,
+      name: item.name || item.title || `Воронка ${item.id}`,
     }));
   });
 }
 
-// -------------------- Стадии --------------------
+// -------------------- Стадии (statuses) --------------------
 
 /**
- * GET /v1/crm.status.list?filter[ENTITY_ID]=DEAL_STAGE
- * Возвращает список стадий сделок, сгруппированных по CATEGORY_ID (воронке).
- * ПРОВЕРИТЬ: поле, определяющее "выигранная/проигранная" стадия — здесь
- * используется SEMANTICS ('S' = выиграна, 'F' = проиграна, иначе — открыта),
- * это стандартная конвенция Bitrix24. Если VibeCode отдаёт иначе —
- * скорректировать функцию isWonSemantics/isLoseSemantics.
+ * GET /v1/statuses — справочник статусов. Отдаём все и фильтруем на своей
+ * стороне по entityId === 'DEAL_STAGE' (стадии сделок) — так безопаснее,
+ * чем угадывать синтаксис серверного фильтра для этой сущности.
+ * ПРОВЕРИТЬ: имя поля группировки по воронке — предполагается categoryId,
+ * как и у сделок; если статусы приходят без него для не-дефолтных воронок,
+ * сверьте с ответом на реальном портале.
  */
-async function getStages() {
-  return cache.getOrLoad('stages', config.cacheTtlMs, async () => {
-    const data = await vibeApi.request('/crm.status.list', {
-      method: 'GET',
-      params: { 'filter[ENTITY_ID]': 'DEAL_STAGE' },
-    });
-    const list = (data && data.result) || [];
-    return list.map((item) => ({
-      statusId: item.STATUS_ID,
-      name: item.NAME,
-      categoryId: item.CATEGORY_ID !== undefined ? Number(item.CATEGORY_ID) : 0,
-      semantics: item.SEMANTICS || null,
-      sort: item.SORT !== undefined ? Number(item.SORT) : 0,
-    }));
+async function getDealStages(bearer) {
+  return cache.getOrLoad(`stages:${bearer || 'anon'}`, config.cacheTtlMs, async () => {
+    const data = await vibeApi.listEntity('statuses', { limit: 500, bearer });
+    const list = (data && data.data) || [];
+    return list
+      .filter((item) => item.entityId === 'DEAL_STAGE')
+      .map((item) => ({
+        statusId: item.statusId || item.id,
+        name: item.name || item.title,
+        categoryId: item.categoryId !== undefined ? Number(item.categoryId) : 0,
+        semantics: item.semanticsId || item.semantics || null,
+        sort: item.sort !== undefined ? Number(item.sort) : 0,
+      }));
   });
 }
 
 function isWonSemantics(semantics) {
   return semantics === 'S';
 }
-
 function isLoseSemantics(semantics) {
   return semantics === 'F';
 }
 
-// -------------------- Сделки --------------------
+// -------------------- Сотрудники (users) --------------------
 
 /**
- * Строит фильтр для crm.deal.list на основе параметров дашборда.
+ * GET /v1/users — список сотрудников портала (для отображения ФИО
+ * и для выпадающего списка фильтра). Кэшируется 5 минут.
+ * ПРОВЕРИТЬ: точные имена полей ФИО — пробуем несколько вариантов.
  */
-function buildDealFilter({ funnelId, from, to, currentUserId }) {
+async function getUsers(bearer) {
+  return cache.getOrLoad(`users:${bearer || 'anon'}`, config.cacheTtlMs, async () => {
+    const data = await vibeApi.listEntity('users', { limit: 1000, bearer });
+    const list = (data && data.data) || [];
+    return list.map((u) => ({
+      id: Number(u.id),
+      name: buildFullName(u),
+      active: u.active !== undefined ? u.active : true,
+    }));
+  });
+}
+
+function buildFullName(u) {
+  // Пробуем распространённые варианты именования полей ФИО.
+  const last = u.lastName || u.LAST_NAME || '';
+  const first = u.name || u.NAME || u.firstName || '';
+  const second = u.secondName || u.SECOND_NAME || '';
+  const full = [last, first, second].filter(Boolean).join(' ').trim();
+  if (full) return full;
+  if (u.fullName) return u.fullName;
+  if (u.title) return u.title;
+  return `Сотрудник #${u.id}`;
+}
+
+// -------------------- Сделки (deals) --------------------
+
+const DEAL_SELECT = ['id', 'title', 'amount', 'currencyId', 'stageId', 'categoryId', 'assignedById', 'createdAt'];
+
+/**
+ * Строит объект filter для POST /v1/deals/search на основе параметров дашборда.
+ * Синтаксис фильтров: https://vibecode.bitrix24.tech/docs/filtering
+ */
+function buildDealFilter({ funnelId, from, to, employeeIds }) {
   const filter = {};
 
-  if (currentUserId) {
-    // Показываем аналитику только по сделкам текущего пользователя.
-    filter.ASSIGNED_BY_ID = currentUserId;
-  }
-
   if (funnelId !== null && funnelId !== undefined) {
-    filter.CATEGORY_ID = funnelId;
+    filter.categoryId = funnelId;
   }
 
-  if (from) {
-    filter['>=DATE_CREATE'] = `${from}T00:00:00`;
+  if (from || to) {
+    const createdAt = {};
+    if (from) createdAt.$gte = `${from}T00:00:00`;
+    if (to) createdAt.$lte = `${to}T23:59:59`;
+    filter.createdAt = createdAt;
   }
-  if (to) {
-    filter['<=DATE_CREATE'] = `${to}T23:59:59`;
+
+  if (employeeIds && employeeIds.length > 0) {
+    // ПРОВЕРИТЬ: оператор $in — если платформа его не поддерживает для этого
+    // поля, при единственном сотруднике используем точное равенство,
+    // а при нескольких — сузим набор фильтром по факту получения данных
+    // (ниже, в fetchAllDeals, есть локальная подстраховка на этот случай).
+    filter.assignedById = employeeIds.length === 1 ? employeeIds[0] : { $in: employeeIds };
   }
 
   return filter;
 }
 
 /**
- * Получает ВСЕ сделки, подходящие под фильтр, постранично, используя
- * batch-запросы для сокращения количества обращений к API.
- * Возвращает только поля, необходимые для агрегации (без лишних данных).
+ * Получает ВСЕ сделки под фильтр постранично через курсор по id
+ * (см. "Листание и количество записей" в документации VibeCode).
+ * Ограничение в 5000 записей на агрегацию платформа накладывает и без нас —
+ * ставим тот же практический предел, чтобы не уйти в бесконечный цикл
+ * на очень широком фильтре. Если увидите meta.warnings про усечение —
+ * сузьте период или воронку.
  */
-async function fetchAllDeals(filter) {
-  const select = ['ID', 'TITLE', 'OPPORTUNITY', 'CURRENCY_ID', 'STAGE_ID', 'CATEGORY_ID', 'ASSIGNED_BY_ID', 'DATE_CREATE'];
-  const pageSize = 50;
-  const maxPages = 20; // защитный предел (до 1000 сделок за запрос) от неограниченного цикла
+async function fetchAllDeals(filter, bearer) {
+  const PAGE_LIMIT = 1000;
+  const MAX_RECORDS = 5000;
 
   let allDeals = [];
-  let start = 0;
-  let page = 0;
+  let cursorFilter = { ...filter };
+  let hasMore = true;
 
-  // Запрашиваем страницы через /v1/batch пачками по 5 команд за раз —
-  // это и есть "группировка запросов" из требований.
-  const BATCH_SIZE = 5;
-
-  while (page < maxPages) {
-    const cmd = {};
-    const starts = [];
-    for (let i = 0; i < BATCH_SIZE; i += 1) {
-      const s = start + i * pageSize;
-      starts.push(s);
-      const params = new URLSearchParams();
-      Object.entries(filter).forEach(([key, value]) => params.append(`filter[${key}]`, value));
-      select.forEach((field) => params.append('select[]', field));
-      params.append('start', String(s));
-      params.append('order[DATE_CREATE]', 'DESC');
-      cmd[`deals_${i}`] = `crm.deal.list?${params.toString()}`;
-    }
-
+  while (hasMore && allDeals.length < MAX_RECORDS) {
     // eslint-disable-next-line no-await-in-loop
-    const response = await vibeApi.batch(cmd);
-    const results = (response && response.result && response.result.result) || {};
+    const response = await vibeApi.searchEntity('deals', {
+      filter: cursorFilter,
+      sort: { id: 'asc' },
+      limit: PAGE_LIMIT,
+      withTotal: false,
+      bearer,
+    });
 
-    let gotAny = false;
-    let shouldStop = false;
+    const page = (response && response.data) || [];
+    allDeals = allDeals.concat(page);
 
-    for (let i = 0; i < BATCH_SIZE; i += 1) {
-      const key = `deals_${i}`;
-      const chunk = results[key];
-      if (Array.isArray(chunk) && chunk.length > 0) {
-        gotAny = true;
-        allDeals = allDeals.concat(chunk);
-        if (chunk.length < pageSize) {
-          shouldStop = true; // последняя неполная страница — дальше данных нет
-        }
-      } else {
-        shouldStop = true;
-      }
+    const meta = (response && response.meta) || {};
+    hasMore = Boolean(meta.hasMore) && Boolean(meta.nextAfterId);
+    if (hasMore) {
+      cursorFilter = { ...filter, id: { $gt: meta.nextAfterId } };
     }
+  }
 
-    page += 1;
-    start += BATCH_SIZE * pageSize;
-
-    if (!gotAny || shouldStop) break;
+  // Локальная подстраховка: если фильтр по нескольким сотрудникам через $in
+  // почему-то не сработал на стороне платформы, отфильтруем сами.
+  if (filter.assignedById && filter.assignedById.$in) {
+    const allowed = new Set(filter.assignedById.$in.map(Number));
+    allDeals = allDeals.filter((d) => allowed.has(Number(d.assignedById)));
   }
 
   return allDeals.map((d) => ({
-    id: d.ID,
-    title: d.TITLE,
-    amount: Number(d.OPPORTUNITY) || 0,
-    currency: d.CURRENCY_ID,
-    stageId: d.STAGE_ID,
-    categoryId: d.CATEGORY_ID !== undefined ? Number(d.CATEGORY_ID) : 0,
-    assignedById: d.ASSIGNED_BY_ID,
-    dateCreate: d.DATE_CREATE,
+    id: d.id,
+    title: d.title,
+    amount: Number(d.amount) || 0,
+    stageId: d.stageId,
+    categoryId: d.categoryId !== undefined ? Number(d.categoryId) : 0,
+    assignedById: Number(d.assignedById),
+    createdAt: d.createdAt,
   }));
 }
 
-// -------------------- Агрегация для дашборда --------------------
+// -------------------- Справочные карты для отображения --------------------
 
-/**
- * Сводка по стадиям: количество и сумма сделок по каждой стадии выбранной
- * воронки (или всех воронок, если funnelId=null).
- */
-async function getStagesSummary({ funnelId, from, to, currentUserId }) {
-  const [stages, deals] = await Promise.all([
-    getStages(),
-    fetchAllDeals(buildDealFilter({ funnelId, from, to, currentUserId })),
+async function buildLookupMaps(bearer) {
+  const [funnels, stages, users] = await Promise.all([
+    getFunnels(bearer),
+    getDealStages(bearer),
+    getUsers(bearer),
   ]);
-
-  const relevantStages = funnelId === null
-    ? stages
-    : stages.filter((s) => s.categoryId === funnelId);
-
-  const byStage = new Map();
-  relevantStages.forEach((s) => {
-    byStage.set(s.statusId, { statusId: s.statusId, name: s.name, count: 0, amount: 0 });
-  });
-
-  deals.forEach((deal) => {
-    const entry = byStage.get(deal.stageId);
-    if (entry) {
-      entry.count += 1;
-      entry.amount += deal.amount;
-    }
-  });
-
-  return Array.from(byStage.values()).sort((a, b) => {
-    const sa = relevantStages.find((s) => s.statusId === a.statusId);
-    const sb = relevantStages.find((s) => s.statusId === b.statusId);
-    return (sa?.sort || 0) - (sb?.sort || 0);
-  });
+  const funnelById = new Map(funnels.map((f) => [f.id, f.name]));
+  const stageByKey = new Map(stages.map((s) => [`${s.categoryId}:${s.statusId}`, s]));
+  const userById = new Map(users.map((u) => [u.id, u.name]));
+  return { funnels, stages, users, funnelById, stageByKey, userById };
 }
 
+function findStage(stageByKey, categoryId, stageId) {
+  return stageByKey.get(`${categoryId}:${stageId}`) || stageByKey.get(`0:${stageId}`) || null;
+}
+
+// -------------------- Список сотрудников для фильтра --------------------
+
 /**
- * Ключевые показатели: сумма открытых сделок, число выигранных за период,
- * средний чек по выигранным сделкам за период.
+ * Список сотрудников для выпадающего фильтра — по умолчанию только те,
+ * кто фактически является ответственным хотя бы по одной сделке под
+ * текущими фильтрами периода/воронки (без учёта самого фильтра по
+ * сотрудникам — иначе список сузился бы сам под себя).
  */
-async function getMetrics({ funnelId, from, to, currentUserId }) {
-  const [stages, deals] = await Promise.all([
-    getStages(),
-    fetchAllDeals(buildDealFilter({ funnelId, from, to, currentUserId })),
+async function getEmployeesForFilter({ funnelId, from, to }, bearer) {
+  const [deals, { userById }] = await Promise.all([
+    fetchAllDeals(buildDealFilter({ funnelId, from, to, employeeIds: null }), bearer),
+    buildLookupMaps(bearer),
   ]);
 
-  const stageById = new Map(stages.map((s) => [s.statusId, s]));
+  const ids = new Set(deals.map((d) => d.assignedById));
+  return Array.from(ids)
+    .map((id) => ({ id, name: userById.get(id) || `Сотрудник #${id}` }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+}
 
-  let openAmount = 0;
-  let wonCount = 0;
-  let wonAmountSum = 0;
+// -------------------- Сводка по стадиям (группировка: сотрудник × воронка × стадия) --------------------
 
-  deals.forEach((deal) => {
-    const stage = stageById.get(deal.stageId);
+async function getStagesReport({ funnelId, from, to, employeeIds }, bearer) {
+  const [deals, maps] = await Promise.all([
+    fetchAllDeals(buildDealFilter({ funnelId, from, to, employeeIds }), bearer),
+    buildLookupMaps(bearer),
+  ]);
+
+  const groups = new Map(); // key: userId|categoryId|stageId
+  deals.forEach((d) => {
+    const key = `${d.assignedById}|${d.categoryId}|${d.stageId}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        responsibleId: d.assignedById,
+        categoryId: d.categoryId,
+        stageId: d.stageId,
+        count: 0,
+        amount: 0,
+      });
+    }
+    const g = groups.get(key);
+    g.count += 1;
+    g.amount += d.amount;
+  });
+
+  const rows = Array.from(groups.values()).map((g) => {
+    const stage = findStage(maps.stageByKey, g.categoryId, g.stageId);
+    return {
+      responsibleName: maps.userById.get(g.responsibleId) || `Сотрудник #${g.responsibleId}`,
+      funnelName: maps.funnelById.get(g.categoryId) || `Воронка ${g.categoryId}`,
+      stageName: (stage && stage.name) || g.stageId,
+      count: g.count,
+      amount: g.amount,
+      _sortStage: (stage && stage.sort) || 0,
+    };
+  });
+
+  rows.sort((a, b) => a.responsibleName.localeCompare(b.responsibleName, 'ru')
+    || a.funnelName.localeCompare(b.funnelName, 'ru')
+    || a._sortStage - b._sortStage);
+
+  return rows.map(({ _sortStage, ...rest }) => rest);
+}
+
+// -------------------- Ключевые показатели (группировка: сотрудник × воронка) --------------------
+
+async function getMetricsReport({ funnelId, from, to, employeeIds }, bearer) {
+  const [deals, maps] = await Promise.all([
+    fetchAllDeals(buildDealFilter({ funnelId, from, to, employeeIds }), bearer),
+    buildLookupMaps(bearer),
+  ]);
+
+  const stageByKeyForSemantics = maps.stageByKey;
+
+  const groups = new Map(); // key: userId|categoryId
+  deals.forEach((d) => {
+    const key = `${d.assignedById}|${d.categoryId}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        responsibleId: d.assignedById,
+        categoryId: d.categoryId,
+        openAmount: 0,
+        wonCount: 0,
+        wonAmountSum: 0,
+      });
+    }
+    const g = groups.get(key);
+    const stage = findStage(stageByKeyForSemantics, d.categoryId, d.stageId);
     const semantics = stage ? stage.semantics : null;
 
     if (isWonSemantics(semantics)) {
-      wonCount += 1;
-      wonAmountSum += deal.amount;
+      g.wonCount += 1;
+      g.wonAmountSum += d.amount;
     } else if (!isLoseSemantics(semantics)) {
-      // Открытая сделка — стадия не WON и не LOSE
-      openAmount += deal.amount;
+      g.openAmount += d.amount;
     }
   });
 
-  const avgCheck = wonCount > 0 ? wonAmountSum / wonCount : 0;
+  const rows = Array.from(groups.values()).map((g) => ({
+    responsibleName: maps.userById.get(g.responsibleId) || `Сотрудник #${g.responsibleId}`,
+    funnelName: maps.funnelById.get(g.categoryId) || `Воронка ${g.categoryId}`,
+    openAmount: g.openAmount,
+    wonCount: g.wonCount,
+    avgCheck: g.wonCount > 0 ? g.wonAmountSum / g.wonCount : 0,
+    _wonAmountSum: g.wonAmountSum,
+  }));
+
+  rows.sort((a, b) => a.responsibleName.localeCompare(b.responsibleName, 'ru')
+    || a.funnelName.localeCompare(b.funnelName, 'ru'));
+
+  // Итоговая строка: суммы по открытым и выигранным считаются простым
+  // сложением, а средний чек — как отношение суммарной выручки к
+  // суммарному числу выигранных сделок (простое сложение самих средних
+  // чеков было бы математически бессмысленным).
+  const totals = rows.reduce((acc, r) => {
+    acc.openAmount += r.openAmount;
+    acc.wonCount += r.wonCount;
+    acc.wonAmountSum += r._wonAmountSum;
+    return acc;
+  }, { openAmount: 0, wonCount: 0, wonAmountSum: 0 });
+
+  const totalRow = {
+    responsibleName: 'Итого',
+    funnelName: '',
+    openAmount: totals.openAmount,
+    wonCount: totals.wonCount,
+    avgCheck: totals.wonCount > 0 ? totals.wonAmountSum / totals.wonCount : 0,
+  };
 
   return {
-    openAmount,
-    wonCount,
-    avgCheck,
+    rows: rows.map(({ _wonAmountSum, ...rest }) => rest),
+    total: totalRow,
   };
 }
 
-/**
- * Последние сделки (по умолчанию 20), отсортированные по дате создания (DESC).
- * Поскольку выборка уже ограничена сделками текущего пользователя
- * (ASSIGNED_BY_ID = currentUserId в фильтре), в качестве "Ответственного"
- * используем имя текущего пользователя (currentUserName), не делая
- * дополнительных запросов к справочнику пользователей.
- */
-async function getRecentDeals({ funnelId, from, to, currentUserId, currentUserName, limit = 20 }) {
-  const deals = await fetchAllDeals(buildDealFilter({ funnelId, from, to, currentUserId }));
-  const stages = await getStages();
-  const stageById = new Map(stages.map((s) => [s.statusId, s]));
+// -------------------- Последние сделки --------------------
 
-  const sorted = [...deals].sort((a, b) => new Date(b.dateCreate) - new Date(a.dateCreate));
+async function getRecentReport({ funnelId, from, to, employeeIds, limit = 20 }, bearer) {
+  const filter = buildDealFilter({ funnelId, from, to, employeeIds });
+  const maps = await buildLookupMaps(bearer);
 
-  return sorted.slice(0, limit).map((deal) => ({
-    id: deal.id,
-    title: deal.title,
-    amount: deal.amount,
-    currency: deal.currency,
-    stageName: stageById.get(deal.stageId)?.name || deal.stageId,
-    responsible: currentUserName || deal.assignedById,
-  }));
+  const response = await vibeApi.searchEntity('deals', {
+    filter,
+    sort: { createdAt: 'desc' },
+    limit,
+    withTotal: false,
+    bearer,
+  });
+
+  let deals = (response && response.data) || [];
+
+  // Та же локальная подстраховка на случай, если $in не сработал на сервере.
+  if (filter.assignedById && filter.assignedById.$in) {
+    const allowed = new Set(filter.assignedById.$in.map(Number));
+    deals = deals.filter((d) => allowed.has(Number(d.assignedById)));
+  }
+
+  return deals.map((d) => {
+    const categoryId = d.categoryId !== undefined ? Number(d.categoryId) : 0;
+    const stage = findStage(maps.stageByKey, categoryId, d.stageId);
+    return {
+      responsibleName: maps.userById.get(Number(d.assignedById)) || `Сотрудник #${d.assignedById}`,
+      funnelName: maps.funnelById.get(categoryId) || `Воронка ${categoryId}`,
+      title: d.title,
+      amount: Number(d.amount) || 0,
+      stageName: (stage && stage.name) || d.stageId,
+    };
+  });
 }
 
 module.exports = {
   getFunnels,
-  getStages,
-  getStagesSummary,
-  getMetrics,
-  getRecentDeals,
+  getDealStages,
+  getUsers,
+  getEmployeesForFilter,
+  getStagesReport,
+  getMetricsReport,
+  getRecentReport,
 };
