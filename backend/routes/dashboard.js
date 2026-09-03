@@ -1,20 +1,19 @@
 // dashboard.js
-// Роуты API дашборда. Все обращения к VibeCode API идут ЧЕРЕЗ бэкенд
-// (BFF-паттерн) — фронтенд обращается только к этим эндпоинтам.
+// Роуты API дашборда. BFF-паттерн: фронтенд обращается только сюда,
+// а сюда уже мы пересылаем Bearer-сессию текущего сотрудника в VibeCode API.
 
 const express = require('express');
 const crm = require('../services/crm');
 const { VibeApiError } = require('../services/vibeApi');
 const { parseDashboardQuery, ValidationError } = require('../utils/validation');
 const { resolveDateRange } = require('../utils/dateRange');
-const { requireUserContext } = require('../middleware/auth');
+const { readGatewayContext } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
 const router = express.Router();
 
-router.use(requireUserContext);
+router.use(readGatewayContext);
 
-// Единая обёртка для обработки ошибок валидации и ошибок API.
 function asyncHandler(handler) {
   return async (req, res) => {
     try {
@@ -26,8 +25,6 @@ function asyncHandler(handler) {
       if (err instanceof VibeApiError) {
         return res.status(err.status).json({ error: err.userMessage });
       }
-      // Неожиданная ошибка — логируем техническую информацию без
-      // персональных данных и отдаём общее сообщение.
       logger.error('Необработанная ошибка в роуте дашборда', {
         path: req.path,
         message: err.message,
@@ -43,56 +40,49 @@ function extractFilters(req) {
   const { from, to } = resolveDateRange(parsed);
   return {
     funnelId: parsed.funnelId,
+    employeeIds: parsed.employeeIds,
     from,
     to,
     limit: parsed.limit,
   };
 }
 
-// GET /api/dashboard/funnels — список всех воронок для фильтра
+// GET /api/dashboard/funnels — список воронок для фильтра
 router.get('/funnels', asyncHandler(async (req, res) => {
-  const funnels = await crm.getFunnels();
-  res.json({
-    items: [{ id: null, name: 'Все воронки' }, ...funnels],
-  });
+  const funnels = await crm.getFunnels(req.vibeBearer);
+  res.json({ items: [{ id: null, name: 'Все воронки' }, ...funnels] });
 }));
 
-// GET /api/dashboard/stages?period=...&from=...&to=...&funnel=...
+// GET /api/dashboard/employees?period=...&funnel=... — список сотрудников для фильтра
+// (только те, у кого есть сделки под текущим периодом/воронкой)
+router.get('/employees', asyncHandler(async (req, res) => {
+  const { funnelId, from, to } = extractFilters(req);
+  const employees = await crm.getEmployeesForFilter({ funnelId, from, to }, req.vibeBearer);
+  res.json({ items: employees });
+}));
+
+// GET /api/dashboard/stages — сводка: сотрудник × воронка × стадия
 router.get('/stages', asyncHandler(async (req, res) => {
-  const { funnelId, from, to } = extractFilters(req);
-  const stages = await crm.getStagesSummary({
-    funnelId,
-    from,
-    to,
-    currentUserId: req.vibeUser.id,
-  });
-  res.json({ items: stages });
+  const { funnelId, employeeIds, from, to } = extractFilters(req);
+  const rows = await crm.getStagesReport({ funnelId, employeeIds, from, to }, req.vibeBearer);
+  res.json({ items: rows });
 }));
 
-// GET /api/dashboard/metrics?period=...&from=...&to=...&funnel=...
+// GET /api/dashboard/metrics — ключевые показатели: сотрудник × воронка + итог
 router.get('/metrics', asyncHandler(async (req, res) => {
-  const { funnelId, from, to } = extractFilters(req);
-  const metrics = await crm.getMetrics({
-    funnelId,
-    from,
-    to,
-    currentUserId: req.vibeUser.id,
-  });
-  res.json(metrics);
+  const { funnelId, employeeIds, from, to } = extractFilters(req);
+  const report = await crm.getMetricsReport({ funnelId, employeeIds, from, to }, req.vibeBearer);
+  res.json(report);
 }));
 
-// GET /api/dashboard/recent?period=...&from=...&to=...&funnel=...&limit=20
+// GET /api/dashboard/recent — последние сделки
 router.get('/recent', asyncHandler(async (req, res) => {
-  const { funnelId, from, to, limit } = extractFilters(req);
-  const deals = await crm.getRecentDeals({
-    funnelId,
-    from,
-    to,
-    limit: limit || 20,
-    currentUserId: req.vibeUser.id,
-    currentUserName: req.vibeUser.name,
-  });
-  res.json({ items: deals });
+  const { funnelId, employeeIds, from, to, limit } = extractFilters(req);
+  const items = await crm.getRecentReport(
+    { funnelId, employeeIds, from, to, limit: limit || 20 },
+    req.vibeBearer,
+  );
+  res.json({ items });
 }));
 
 module.exports = router;
