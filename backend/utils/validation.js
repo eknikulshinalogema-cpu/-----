@@ -1,8 +1,5 @@
 // validation.js
 // Валидация всех входных параметров запросов к нашему API.
-// Ничего не принимаем "как есть" от фронтенда — это BFF, но параметры
-// в итоге попадают в фильтры запросов к VibeCode API, поэтому их
-// нужно строго проверять.
 
 class ValidationError extends Error {
   constructor(message) {
@@ -14,7 +11,7 @@ class ValidationError extends Error {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * Проверяет и нормализует параметры фильтра (period/from/to/funnel).
+ * Проверяет и нормализует параметры фильтра (period/from/to/funnel/employees).
  */
 function parseDashboardQuery(query) {
   const result = {};
@@ -52,7 +49,6 @@ function parseDashboardQuery(query) {
   }
 
   // --- Воронка ---
-  // "Все воронки" передаётся как отсутствие параметра, либо funnel=all.
   if (query.funnel !== undefined && query.funnel !== '' && query.funnel !== 'all') {
     const funnelId = Number(query.funnel);
     if (!Number.isInteger(funnelId) || funnelId < 0) {
@@ -60,7 +56,22 @@ function parseDashboardQuery(query) {
     }
     result.funnelId = funnelId;
   } else {
-    result.funnelId = null; // все воронки
+    result.funnelId = null;
+  }
+
+  // --- Сотрудники (через запятую: employees=12,45,7) ---
+  if (query.employees !== undefined && query.employees !== '' && query.employees !== 'all') {
+    const ids = String(query.employees)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map(Number);
+    if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+      throw new ValidationError('Параметр employees должен быть списком положительных целых чисел через запятую');
+    }
+    result.employeeIds = ids;
+  } else {
+    result.employeeIds = null; // все сотрудники
   }
 
   // --- limit (только для /recent) ---
