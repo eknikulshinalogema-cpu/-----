@@ -39,24 +39,30 @@
             <option value="all" selected>Все воронки</option>
           </select>
         </div>
+
+        <div class="filter filter--employees">
+          <label for="employeeToggle">Сотрудники</label>
+          <button type="button" id="employeeToggle" class="employee-toggle">Все сотрудники</button>
+          <div id="employeeDropdown" class="employee-dropdown" hidden>
+            <div class="employee-dropdown__actions">
+              <button type="button" id="employeeSelectAll">Выбрать всех</button>
+              <button type="button" id="employeeClearAll">Снять всё</button>
+            </div>
+            <div id="employeeList" class="employee-dropdown__list">
+              <div class="loader">Загрузка...</div>
+            </div>
+          </div>
+        </div>
       </div>
     </header>
 
     <main class="content">
       <div id="globalError" class="banner banner--error" hidden></div>
 
-      <section class="cards" id="metricsCards">
-        <div class="card">
-          <div class="card__label">Сумма открытых сделок</div>
-          <div class="card__value" id="metricOpenAmount">—</div>
-        </div>
-        <div class="card">
-          <div class="card__label">Выигранные сделки за период</div>
-          <div class="card__value" id="metricWonCount">—</div>
-        </div>
-        <div class="card">
-          <div class="card__label">Средний чек</div>
-          <div class="card__value" id="metricAvgCheck">—</div>
+      <section class="panel">
+        <h2 class="panel__title">Ключевые показатели</h2>
+        <div class="panel__body" id="metricsContainer">
+          <div class="loader">Загрузка...</div>
         </div>
       </section>
 
