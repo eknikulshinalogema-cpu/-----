@@ -1,7 +1,6 @@
 // app.js
-// Клиентская логика дашборда. Фронтенд ходит ТОЛЬКО к своему бэкенду
-// (эндпоинты /api/dashboard/*) — никаких прямых обращений к VibeCode API
-// и никаких ключей на клиенте.
+// Клиентская логика дашборда. Фронтенд ходит только к своему бэкенду
+// (/api/dashboard/*) — ключей и токенов здесь нет и быть не может.
 
 (function () {
   const state = {
@@ -9,6 +8,7 @@
     from: '',
     to: '',
     funnel: 'all',
+    selectedEmployees: null, // null = все сотрудники; иначе Set(id)
   };
 
   const el = {
@@ -17,17 +17,28 @@
     customDates: document.getElementById('customDates'),
     dateFrom: document.getElementById('dateFrom'),
     dateTo: document.getElementById('dateTo'),
+    employeeToggle: document.getElementById('employeeToggle'),
+    employeeDropdown: document.getElementById('employeeDropdown'),
+    employeeList: document.getElementById('employeeList'),
+    employeeSelectAll: document.getElementById('employeeSelectAll'),
+    employeeClearAll: document.getElementById('employeeClearAll'),
     globalError: document.getElementById('globalError'),
-    metricOpenAmount: document.getElementById('metricOpenAmount'),
-    metricWonCount: document.getElementById('metricWonCount'),
-    metricAvgCheck: document.getElementById('metricAvgCheck'),
+    metricsContainer: document.getElementById('metricsContainer'),
     stagesContainer: document.getElementById('stagesContainer'),
     recentContainer: document.getElementById('recentContainer'),
   };
 
+  let allEmployees = []; // [{id, name}] — полный список под текущий период/воронку
+
   function formatMoney(value) {
     if (value === null || value === undefined) return '—';
     return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value) + ' ₽';
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
   }
 
   function showError(message) {
@@ -48,6 +59,9 @@
       if (state.to) params.set('to', state.to);
     }
     params.set('funnel', state.funnel);
+    if (state.selectedEmployees && state.selectedEmployees.size > 0) {
+      params.set('employees', Array.from(state.selectedEmployees).join(','));
+    }
     if (extra) {
       Object.entries(extra).forEach(([k, v]) => params.set(k, v));
     }
@@ -71,7 +85,7 @@
     return body;
   }
 
-  // ---------- Загрузка справочника воронок ----------
+  // ---------- Воронки ----------
 
   async function loadFunnels() {
     try {
@@ -85,36 +99,158 @@
         el.funnelSelect.appendChild(opt);
       });
     } catch (err) {
-      // Справочник воронок не критичен для остального интерфейса —
-      // просто оставляем дефолтную опцию "Все воронки".
       console.error('Не удалось загрузить список воронок', err.message);
     }
   }
 
-  // ---------- Метрики ----------
+  // ---------- Сотрудники ----------
 
-  function renderMetricsLoading() {
-    el.metricOpenAmount.textContent = '…';
-    el.metricWonCount.textContent = '…';
-    el.metricAvgCheck.textContent = '…';
+  function updateEmployeeToggleLabel() {
+    if (!state.selectedEmployees || state.selectedEmployees.size === 0) {
+      el.employeeToggle.textContent = 'Все сотрудники';
+    } else if (state.selectedEmployees.size === 1) {
+      const id = Array.from(state.selectedEmployees)[0];
+      const emp = allEmployees.find((e) => e.id === id);
+      el.employeeToggle.textContent = emp ? emp.name : '1 сотрудник';
+    } else {
+      el.employeeToggle.textContent = `Выбрано: ${state.selectedEmployees.size}`;
+    }
+  }
+
+  function renderEmployeeList() {
+    if (allEmployees.length === 0) {
+      el.employeeList.innerHTML = '<div class="empty-state">Нет сотрудников с сделками</div>';
+      return;
+    }
+    el.employeeList.innerHTML = allEmployees.map((emp) => {
+      const checked = state.selectedEmployees && state.selectedEmployees.has(emp.id) ? 'checked' : '';
+      return `
+        <label class="employee-item">
+          <input type="checkbox" data-employee-id="${emp.id}" ${checked} />
+          <span>${escapeHtml(emp.name)}</span>
+        </label>
+      `;
+    }).join('');
+
+    el.employeeList.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const id = Number(cb.dataset.employeeId);
+        if (!state.selectedEmployees) state.selectedEmployees = new Set();
+        if (cb.checked) {
+          state.selectedEmployees.add(id);
+        } else {
+          state.selectedEmployees.delete(id);
+        }
+        if (state.selectedEmployees.size === 0) state.selectedEmployees = null;
+        updateEmployeeToggleLabel();
+        reloadAll();
+      });
+    });
+  }
+
+  async function loadEmployees() {
+    el.employeeList.innerHTML = '<div class="loader">Загрузка...</div>';
+    try {
+      // Список сотрудников зависит от периода и воронки, но не от самого
+      // фильтра по сотрудникам (иначе список сузился бы сам под себя).
+      const params = new URLSearchParams();
+      params.set('period', state.period);
+      if (state.period === 'custom') {
+        if (state.from) params.set('from', state.from);
+        if (state.to) params.set('to', state.to);
+      }
+      params.set('funnel', state.funnel);
+
+      const data = await fetchJson(`/api/dashboard/employees?${params.toString()}`);
+      allEmployees = data.items || [];
+      renderEmployeeList();
+    } catch (err) {
+      el.employeeList.innerHTML = '<div class="empty-state">Не удалось загрузить список</div>';
+    }
+  }
+
+  el.employeeToggle.addEventListener('click', () => {
+    const willOpen = el.employeeDropdown.hidden;
+    el.employeeDropdown.hidden = !willOpen;
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!el.employeeDropdown.hidden
+      && !el.employeeDropdown.contains(e.target)
+      && e.target !== el.employeeToggle) {
+      el.employeeDropdown.hidden = true;
+    }
+  });
+
+  el.employeeSelectAll.addEventListener('click', () => {
+    state.selectedEmployees = new Set(allEmployees.map((e) => e.id));
+    renderEmployeeList();
+    updateEmployeeToggleLabel();
+    reloadAll();
+  });
+
+  el.employeeClearAll.addEventListener('click', () => {
+    state.selectedEmployees = null;
+    renderEmployeeList();
+    updateEmployeeToggleLabel();
+    reloadAll();
+  });
+
+  // ---------- Ключевые показатели (таблица: сотрудник × воронка + итог) ----------
+
+  function renderMetrics(rows, total) {
+    if (!rows || rows.length === 0) {
+      el.metricsContainer.innerHTML = '<div class="empty-state">Нет данных</div>';
+      return;
+    }
+    const body = rows.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.responsibleName)}</td>
+        <td>${escapeHtml(r.funnelName)}</td>
+        <td class="amount">${formatMoney(r.openAmount)}</td>
+        <td class="amount">${r.wonCount}</td>
+        <td class="amount">${formatMoney(r.avgCheck)}</td>
+      </tr>
+    `).join('');
+
+    const totalRow = total ? `
+      <tr class="total-row">
+        <td>${escapeHtml(total.responsibleName)}</td>
+        <td></td>
+        <td class="amount">${formatMoney(total.openAmount)}</td>
+        <td class="amount">${total.wonCount}</td>
+        <td class="amount">${formatMoney(total.avgCheck)}</td>
+      </tr>
+    ` : '';
+
+    el.metricsContainer.innerHTML = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Ответственный</th>
+            <th>Воронка</th>
+            <th class="amount">Сумма открытых сделок</th>
+            <th class="amount">Выиграно за период</th>
+            <th class="amount">Средний чек</th>
+          </tr>
+        </thead>
+        <tbody>${body}${totalRow}</tbody>
+      </table>
+    `;
   }
 
   async function loadMetrics() {
-    renderMetricsLoading();
+    el.metricsContainer.innerHTML = '<div class="loader">Загрузка...</div>';
     try {
       const data = await fetchJson(`/api/dashboard/metrics?${buildQuery()}`);
-      el.metricOpenAmount.textContent = formatMoney(data.openAmount);
-      el.metricWonCount.textContent = data.wonCount ?? 0;
-      el.metricAvgCheck.textContent = formatMoney(data.avgCheck);
+      renderMetrics(data.rows, data.total);
     } catch (err) {
-      el.metricOpenAmount.textContent = '—';
-      el.metricWonCount.textContent = '—';
-      el.metricAvgCheck.textContent = '—';
+      el.metricsContainer.innerHTML = '<div class="empty-state">Нет данных</div>';
       throw err;
     }
   }
 
-  // ---------- Стадии ----------
+  // ---------- Сводка по стадиям (сотрудник × воронка × стадия) ----------
 
   function renderStages(items) {
     if (!items || items.length === 0) {
@@ -123,8 +259,10 @@
     }
     const rows = items.map((s) => `
       <tr>
-        <td><span class="stage-badge">${escapeHtml(s.name)}</span></td>
+        <td>${escapeHtml(s.responsibleName)}</td>
+        <td>${escapeHtml(s.funnelName)}</td>
         <td class="amount">${s.count}</td>
+        <td><span class="stage-badge">${escapeHtml(s.stageName)}</span></td>
         <td class="amount">${formatMoney(s.amount)}</td>
       </tr>
     `).join('');
@@ -133,8 +271,10 @@
       <table class="data-table">
         <thead>
           <tr>
-            <th>Стадия</th>
+            <th>Ответственный</th>
+            <th>Воронка</th>
             <th class="amount">Кол-во сделок</th>
+            <th>Стадия</th>
             <th class="amount">Сумма</th>
           </tr>
         </thead>
@@ -163,10 +303,11 @@
     }
     const rows = items.map((d) => `
       <tr>
+        <td>${escapeHtml(d.responsibleName)}</td>
+        <td>${escapeHtml(d.funnelName)}</td>
         <td>${escapeHtml(d.title || '—')}</td>
         <td class="amount">${formatMoney(d.amount)}</td>
         <td><span class="stage-badge">${escapeHtml(d.stageName || '—')}</span></td>
-        <td>${escapeHtml(String(d.responsible ?? '—'))}</td>
       </tr>
     `).join('');
 
@@ -174,10 +315,11 @@
       <table class="data-table">
         <thead>
           <tr>
+            <th>Ответственный</th>
+            <th>Воронка</th>
             <th>Название сделки</th>
             <th class="amount">Сумма</th>
             <th>Стадия</th>
-            <th>Ответственный</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -196,13 +338,7 @@
     }
   }
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  // ---------- Общая перезагрузка данных ----------
+  // ---------- Общая перезагрузка ----------
 
   async function reloadAll() {
     clearError();
@@ -213,35 +349,43 @@
     }
   }
 
+  async function reloadEverything() {
+    await loadEmployees();
+    updateEmployeeToggleLabel();
+    await reloadAll();
+  }
+
   // ---------- Обработчики фильтров ----------
 
   el.periodSelect.addEventListener('change', () => {
     state.period = el.periodSelect.value;
     el.customDates.hidden = state.period !== 'custom';
+    state.selectedEmployees = null; // список сотрудников зависит от периода — сбрасываем выбор
     if (state.period !== 'custom') {
-      reloadAll();
+      reloadEverything();
     }
   });
 
   el.dateFrom.addEventListener('change', () => {
     state.from = el.dateFrom.value;
-    if (state.period === 'custom' && state.from && state.to) reloadAll();
+    if (state.period === 'custom' && state.from && state.to) reloadEverything();
   });
 
   el.dateTo.addEventListener('change', () => {
     state.to = el.dateTo.value;
-    if (state.period === 'custom' && state.from && state.to) reloadAll();
+    if (state.period === 'custom' && state.from && state.to) reloadEverything();
   });
 
   el.funnelSelect.addEventListener('change', () => {
     state.funnel = el.funnelSelect.value;
-    reloadAll();
+    state.selectedEmployees = null;
+    reloadEverything();
   });
 
   // ---------- Инициализация ----------
 
   (async function init() {
     await loadFunnels();
-    await reloadAll();
+    await reloadEverything();
   })();
 })();
