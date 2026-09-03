@@ -36,19 +36,25 @@ async function getFunnels(bearer) {
 // -------------------- Стадии (statuses) --------------------
 
 /**
- * GET /v1/statuses — справочник статусов. Отдаём все и фильтруем на своей
- * стороне по entityId === 'DEAL_STAGE' (стадии сделок) — так безопаснее,
- * чем угадывать синтаксис серверного фильтра для этой сущности.
- * ПРОВЕРИТЬ: имя поля группировки по воронке — предполагается categoryId,
- * как и у сделок; если статусы приходят без него для не-дефолтных воронок,
- * сверьте с ответом на реальном портале.
+ * GET /v1/statuses — справочник статусов.
+ *
+ * ВАЖНО (найдено на реальных данных): у не-дефолтных воронок Битрикс24
+ * коды стадий выглядят как "C97:WON", "C41:PREPAYMENT_INVOIC" — номер
+ * воронки уже "зашит" в сам код стадии. Соответственно, справочник
+ * статусов для таких воронок хранится под entityId вида "DEAL_STAGE_97"
+ * (а не просто "DEAL_STAGE", как у дефолтной воронки с id=0). Поэтому:
+ * 1) забираем все статусы, у которых entityId равен "DEAL_STAGE" ИЛИ
+ *    начинается с "DEAL_STAGE_" — это покрывает все воронки разом;
+ * 2) сопоставление с сделкой ведём НАПРЯМУЮ по полному коду стадии
+ *    (например "C97:WON"), без отдельной комбинации с categoryId —
+ *    код уже однозначно определяет и воронку, и стадию.
  */
 async function getDealStages(bearer) {
   return cache.getOrLoad(`stages:${bearer || 'anon'}`, config.cacheTtlMs, async () => {
     const data = await vibeApi.listEntity('statuses', { limit: 500, bearer });
     const list = (data && data.data) || [];
     return list
-      .filter((item) => item.entityId === 'DEAL_STAGE')
+      .filter((item) => item.entityId === 'DEAL_STAGE' || (item.entityId && String(item.entityId).startsWith('DEAL_STAGE_')))
       .map((item) => ({
         statusId: item.statusId || item.id,
         name: item.name || item.title,
@@ -193,13 +199,16 @@ async function buildLookupMaps(bearer) {
     getUsers(bearer),
   ]);
   const funnelById = new Map(funnels.map((f) => [f.id, f.name]));
-  const stageByKey = new Map(stages.map((s) => [`${s.categoryId}:${s.statusId}`, s]));
+  // Ключ — полный код стадии как он приходит у сделки (например "C97:WON"
+  // для не-дефолтной воронки или просто "NEW" для дефолтной) — без
+  // искусственной комбинации с categoryId, см. комментарий в getDealStages.
+  const stageByKey = new Map(stages.map((s) => [s.statusId, s]));
   const userById = new Map(users.map((u) => [u.id, u.name]));
   return { funnels, stages, users, funnelById, stageByKey, userById };
 }
 
-function findStage(stageByKey, categoryId, stageId) {
-  return stageByKey.get(`${categoryId}:${stageId}`) || stageByKey.get(`0:${stageId}`) || null;
+function findStage(stageByKey, stageId) {
+  return stageByKey.get(stageId) || null;
 }
 
 // -------------------- Список сотрудников для фильтра --------------------
@@ -248,7 +257,7 @@ async function getStagesReport({ funnelId, from, to, employeeIds }, bearer) {
   });
 
   const rows = Array.from(groups.values()).map((g) => {
-    const stage = findStage(maps.stageByKey, g.categoryId, g.stageId);
+    const stage = findStage(maps.stageByKey, g.stageId);
     return {
       responsibleName: maps.userById.get(g.responsibleId) || `Сотрудник #${g.responsibleId}`,
       funnelName: maps.funnelById.get(g.categoryId) || `Воронка ${g.categoryId}`,
@@ -289,7 +298,7 @@ async function getMetricsReport({ funnelId, from, to, employeeIds }, bearer) {
       });
     }
     const g = groups.get(key);
-    const stage = findStage(stageByKeyForSemantics, d.categoryId, d.stageId);
+    const stage = findStage(stageByKeyForSemantics, d.stageId);
     const semantics = stage ? stage.semantics : null;
 
     if (isWonSemantics(semantics)) {
@@ -361,7 +370,7 @@ async function getRecentReport({ funnelId, from, to, employeeIds, limit = 20 }, 
 
   return deals.map((d) => {
     const categoryId = d.categoryId !== undefined ? Number(d.categoryId) : 0;
-    const stage = findStage(maps.stageByKey, categoryId, d.stageId);
+    const stage = findStage(maps.stageByKey, d.stageId);
     return {
       responsibleName: maps.userById.get(Number(d.assignedById)) || `Сотрудник #${d.assignedById}`,
       funnelName: maps.funnelById.get(categoryId) || `Воронка ${categoryId}`,
