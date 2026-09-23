@@ -1,6 +1,6 @@
 // dashboard.js
 // Роуты API дашборда. BFF-паттерн: фронтенд обращается только сюда,
-// а сюда уже мы пересылаем Bearer-сессию текущего сотрудника в VibeCode API.
+// а мы пересылаем Bearer-сессию текущего сотрудника в VibeCode API.
 
 const express = require('express');
 const crm = require('../services/crm');
@@ -53,29 +53,29 @@ router.get('/funnels', asyncHandler(async (req, res) => {
   res.json({ items: [{ id: null, name: 'Все воронки' }, ...funnels] });
 }));
 
-// GET /api/dashboard/employees?period=...&funnel=... — список сотрудников для фильтра
-// (только те, у кого есть сделки под текущим периодом/воронкой)
+// GET /api/dashboard/employees — список сотрудников для фильтра
+// (построен через aggregate groupBy assignedById — точный count-only агрегат)
 router.get('/employees', asyncHandler(async (req, res) => {
   const { funnelId, from, to } = extractFilters(req);
   const employees = await crm.getEmployeesForFilter({ funnelId, from, to }, req.vibeBearer);
   res.json({ items: employees });
 }));
 
-// GET /api/dashboard/stages — сводка: сотрудник × воронка × стадия
+// GET /api/dashboard/stages — сводка: сотрудник × воронка × стадия (aggregate)
 router.get('/stages', asyncHandler(async (req, res) => {
   const { funnelId, employeeIds, from, to } = extractFilters(req);
-  const rows = await crm.getStagesReport({ funnelId, employeeIds, from, to }, req.vibeBearer);
-  res.json({ items: rows });
+  const report = await crm.getStagesReport({ funnelId, employeeIds, from, to }, req.vibeBearer);
+  res.json({ items: report.items, truncated: report.truncated });
 }));
 
-// GET /api/dashboard/metrics — ключевые показатели: сотрудник × воронка + итог
+// GET /api/dashboard/metrics — ключевые показатели (aggregate) + итог
 router.get('/metrics', asyncHandler(async (req, res) => {
   const { funnelId, employeeIds, from, to } = extractFilters(req);
   const report = await crm.getMetricsReport({ funnelId, employeeIds, from, to }, req.vibeBearer);
-  res.json(report);
+  res.json({ rows: report.rows, total: report.total, truncated: report.truncated });
 }));
 
-// GET /api/dashboard/recent — последние сделки
+// GET /api/dashboard/recent — последние сделки (search, limit 20, explicit select)
 router.get('/recent', asyncHandler(async (req, res) => {
   const { funnelId, employeeIds, from, to, limit } = extractFilters(req);
   const items = await crm.getRecentReport(
