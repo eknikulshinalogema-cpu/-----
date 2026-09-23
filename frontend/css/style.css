@@ -14,6 +14,9 @@
   --b24-text-muted: #7c8695;
   --b24-success: #82bc00;
   --b24-danger: #e6493a;
+  --b24-warning: #a06a00;
+  --b24-warning-bg: #fff6e5;
+  --b24-warning-border: #f3d9a4;
   --b24-radius: 6px;
 }
 
@@ -85,9 +88,7 @@ body {
 
 /* ВАЖНО: атрибут [hidden] должен побеждать наш собственный display:flex,
    иначе блок с произвольным периодом виден всегда, а не только когда
-   выбран пункт "Произвольный период". Без этого правила браузер выбирает
-   между двумя правилами авторского стиля по порядку/специфичности, а не
-   по стандартному приоритету [hidden] из UA-стиля. */
+   выбран пункт "Произвольный период". */
 .filter--dates[hidden] {
   display: none;
 }
@@ -208,6 +209,16 @@ body {
   background: #fdecea;
   color: var(--b24-danger);
   border: 1px solid #f6c6c1;
+}
+
+/* Предупреждение об усечённой выборке (aggregate вернул truncated:true) —
+   не ошибка, а информационная плашка. */
+.truncated-note {
+  background: var(--b24-warning-bg);
+  color: var(--b24-warning);
+  border-bottom: 1px solid var(--b24-warning-border);
+  padding: 8px 20px;
+  font-size: 12px;
 }
 
 /* ---------- Панели (таблицы) ---------- */
