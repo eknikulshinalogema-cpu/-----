@@ -24,11 +24,13 @@
     employeeClearAll: document.getElementById('employeeClearAll'),
     globalError: document.getElementById('globalError'),
     metricsContainer: document.getElementById('metricsContainer'),
+    metricsTruncatedNote: document.getElementById('metricsTruncatedNote'),
     stagesContainer: document.getElementById('stagesContainer'),
+    stagesTruncatedNote: document.getElementById('stagesTruncatedNote'),
     recentContainer: document.getElementById('recentContainer'),
   };
 
-  let allEmployees = []; // [{id, name}] — полный список под текущий период/воронку
+  let allEmployees = [];
 
   function formatMoney(value) {
     if (value === null || value === undefined) return '—';
@@ -151,8 +153,6 @@
   async function loadEmployees() {
     el.employeeList.innerHTML = '<div class="loader">Загрузка...</div>';
     try {
-      // Список сотрудников зависит от периода и воронки, но не от самого
-      // фильтра по сотрудникам (иначе список сузился бы сам под себя).
       const params = new URLSearchParams();
       params.set('period', state.period);
       if (state.period === 'custom') {
@@ -196,7 +196,7 @@
     reloadAll();
   });
 
-  // ---------- Ключевые показатели (таблица: сотрудник × воронка + итог) ----------
+  // ---------- Ключевые показатели ----------
 
   function renderMetrics(rows, total) {
     if (!rows || rows.length === 0) {
@@ -241,16 +241,18 @@
 
   async function loadMetrics() {
     el.metricsContainer.innerHTML = '<div class="loader">Загрузка...</div>';
+    el.metricsTruncatedNote.hidden = true;
     try {
       const data = await fetchJson(`/api/dashboard/metrics?${buildQuery()}`);
       renderMetrics(data.rows, data.total);
+      el.metricsTruncatedNote.hidden = !data.truncated;
     } catch (err) {
       el.metricsContainer.innerHTML = '<div class="empty-state">Нет данных</div>';
       throw err;
     }
   }
 
-  // ---------- Сводка по стадиям (сотрудник × воронка × стадия) ----------
+  // ---------- Сводка по стадиям ----------
 
   function renderStages(items) {
     if (!items || items.length === 0) {
@@ -285,9 +287,11 @@
 
   async function loadStages() {
     el.stagesContainer.innerHTML = '<div class="loader">Загрузка...</div>';
+    el.stagesTruncatedNote.hidden = true;
     try {
       const data = await fetchJson(`/api/dashboard/stages?${buildQuery()}`);
       renderStages(data.items);
+      el.stagesTruncatedNote.hidden = !data.truncated;
     } catch (err) {
       el.stagesContainer.innerHTML = '<div class="empty-state">Нет данных</div>';
       throw err;
@@ -360,7 +364,7 @@
   el.periodSelect.addEventListener('change', () => {
     state.period = el.periodSelect.value;
     el.customDates.hidden = state.period !== 'custom';
-    state.selectedEmployees = null; // список сотрудников зависит от периода — сбрасываем выбор
+    state.selectedEmployees = null;
     if (state.period !== 'custom') {
       reloadEverything();
     }
