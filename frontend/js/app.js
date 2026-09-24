@@ -79,7 +79,21 @@
       body = null;
     }
     if (!response.ok) {
-      const message = (body && body.error) || 'Произошла ошибка при получении данных';
+      // Ошибка может прийти в двух разных формах:
+      // 1) от нашего собственного бэкенда — body.error это строка
+      //    (см. backend/routes/dashboard.js);
+      // 2) напрямую от платформенного Gateway, минуя наш код (например,
+      //    если сервер долго не отвечал) — тогда body.error это объект
+      //    вида {code, message}, а не строка. Раньше это приводило
+      //    к надписи "[object Object]" в баннере ошибки.
+      let message = 'Произошла ошибка при получении данных';
+      if (body && typeof body.error === 'string') {
+        message = body.error;
+      } else if (body && body.error && typeof body.error === 'object') {
+        message = body.error.code === 'BH_APP_TIMEOUT'
+          ? 'Сервер долго отвечает под текущим фильтром — попробуйте сузить период или воронку и повторить'
+          : (body.error.message || message);
+      }
       const err = new Error(message);
       err.status = response.status;
       throw err;
